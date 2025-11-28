@@ -1,27 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Egyszerű Tkinter alapú képszerkesztő
-Támogatott funkciók:
-- Open / Save
-- Resize (szélesség megadása, arány megtartása)
-- Rotate (fokban)
-- Crop (kézi koordináták vagy "képkiválasztás" egyszerű módon)
-- Filters: blur, sharpen, bw, edge
-- Brightness / Contrast csúszkák
-- Watermark text
-- Undo stack (néhány lépés visszavonása)
-- Reset original image
+Képszerkesztő (javított, tisztított verzió)
+- Írós crop eltávolítva
+- Egérrel húzható crop (fixálva)
+- Autosave szerkesztett_kepek mappába
+- Autoload kepek mappából
+- Új: Quick Save → kesz_kepek mappába
 """
-import os
-import sys
-import math
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
-from PIL import Image, ImageFilter, ImageEnhance, ImageTk, ImageOps, ImageDraw, ImageFont
-import traceback
 
-# ---------- Segédfüggvények ----------
+import os
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageFilter, ImageEnhance, ImageTk, ImageOps, ImageDraw, ImageFont
+
+
+# ------------------- Segédfüggvények -------------------
 def safe_open_image(path):
     try:
         return Image.open(path).convert("RGB")
@@ -29,402 +23,428 @@ def safe_open_image(path):
         print("Hiba kép megnyitásakor:", e)
         return None
 
+
 def pil_to_tk(img, maxsize=(900, 600)):
-    """Convert PIL image to Tk PhotoImage, resize to fit maxsize while keeping ratio"""
     w, h = img.size
     max_w, max_h = maxsize
     ratio = min(max_w / w, max_h / h, 1.0)
     disp_w, disp_h = int(w * ratio), int(h * ratio)
     disp_img = img.resize((disp_w, disp_h), Image.Resampling.LANCZOS)
-    return ImageTk.PhotoImage(disp_img), ratio
+    return ImageTk.PhotoImage(disp_img), ratio, (disp_w, disp_h)
+
 
 def clamp_box(box, img_size):
     L, U, R, D = box
     w, h = img_size
-    L = max(0, min(L, w-1))
+    L = max(0, min(L, w - 1))
     R = max(1, min(R, w))
-    U = max(0, min(U, h-1))
+    U = max(0, min(U, h - 1))
     D = max(1, min(D, h))
-    if R <= L: R = min(L+1, w)
-    if D <= U: D = min(U+1, h)
+    if R <= L: R = min(L + 1, w)
+    if D <= U: D = min(U + 1, h)
     return (L, U, R, D)
 
-# ---------- Fő GUI osztály ----------
+
+# ---------------------- APP CLASS -----------------------
 class ImageEditorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Képszerkesztő - Haladó Prog Beadandó")
-        self.root.geometry("1200x750")
+        self.root.title("Képszerkesztő – Final Version")
+        self.root.geometry("1250x800")
 
-        # állapotok
-        self.image_path = None
-        self.original_image = None  # eredeti (PIL.Image)
-        self.current_image = None   # dolgozó egy példány
-        self.preview_ratio = 1.0    # arány a megjelenítéshez
-        self.undo_stack = []        # visszavonási stack (PIL képek)
+        # Autosave mappa
+        self.autosave_dir = "szerkesztett_kepek"
+        os.makedirs(self.autosave_dir, exist_ok=True)
+
+        # Quick save mappa
+        self.export_dir = "kesz_kepek"
+        os.makedirs(self.export_dir, exist_ok=True)
+
+        # Autoload könyvtár
+        self.autoload_dir = "kepek"
+        os.makedirs(self.autoload_dir, exist_ok=True)
+
+        # Állapotok
+        self.original_image = None
+        self.current_image = None
+        self.undo_stack = []
         self.max_undo = 10
+
+        # Crop state
+        self.select_start = None
+        self.select_rect = None
+
+        # Preview adatok
+        self.preview_ratio = 1.0
+        self.preview_offset = (0, 0)
+        self.display_size = (0, 0)
 
         self._build_ui()
 
+    # ------------------- UI ----------------------
     def _build_ui(self):
-        # bal oldali panel: gombok, beállítások
-        left_frame = ttk.Frame(self.root, padding=8)
-        left_frame.pack(side="left", fill="y")
+        left = ttk.Frame(self.root, padding=8)
+        left.pack(side="left", fill="y")
 
-        # Open / Save
-        btn_open = ttk.Button(left_frame, text="Open image...", command=self.open_image)
-        btn_open.pack(fill="x", pady=4)
-        btn_save = ttk.Button(left_frame, text="Save image as...", command=self.save_image_as)
-        btn_save.pack(fill="x", pady=4)
-        btn_reset = ttk.Button(left_frame, text="Reset to original", command=self.reset_image)
-        btn_reset.pack(fill="x", pady=4)
-        btn_undo = ttk.Button(left_frame, text="Undo", command=self.undo)
-        btn_undo.pack(fill="x", pady=4)
+        ttk.Button(left, text="Open Image...", command=self.open_image).pack(fill="x", pady=4)
+        ttk.Button(left, text="Save Image As...", command=self.save_image_as).pack(fill="x", pady=4)
+        ttk.Button(left, text="Quick Save (→ kesz_kepek)", command=self.quick_save).pack(fill="x", pady=4)
+        ttk.Button(left, text="Reset to Original", command=self.reset_image).pack(fill="x", pady=4)
+        ttk.Button(left, text="Undo", command=self.undo).pack(fill="x", pady=4)
 
-        ttk.Separator(left_frame, orient="horizontal").pack(fill="x", pady=6)
+        ttk.Separator(left).pack(fill="x", pady=6)
+
+        # Autoload list
+        ttk.Label(left, text="Load from /kepek:").pack(anchor="w")
+        self.autoload_list = tk.Listbox(left, height=6)
+        self.autoload_list.pack(fill="x", pady=4)
+        ttk.Button(left, text="Open Selected", command=self.autoload_open).pack(fill="x")
+        self.refresh_autoload()
+
+        ttk.Separator(left).pack(fill="x", pady=8)
 
         # Resize
-        ttk.Label(left_frame, text="Resize (width px):").pack(anchor="w")
+        ttk.Label(left, text="Resize (width px):").pack(anchor="w")
         self.resize_var = tk.StringVar()
-        resize_entry = ttk.Entry(left_frame, textvariable=self.resize_var)
-        resize_entry.pack(fill="x", pady=2)
-        resize_btn = ttk.Button(left_frame, text="Apply Resize", command=self.apply_resize)
-        resize_btn.pack(fill="x", pady=2)
+        ttk.Entry(left, textvariable=self.resize_var).pack(fill="x")
+        ttk.Button(left, text="Apply Resize", command=self.apply_resize).pack(fill="x", pady=3)
 
         # Rotate
-        ttk.Label(left_frame, text="Rotate (degrees):").pack(anchor="w", pady=(8,0))
+        ttk.Label(left, text="Rotate (degrees):").pack(anchor="w", pady=4)
         self.rotate_var = tk.StringVar(value="0")
-        rotate_entry = ttk.Entry(left_frame, textvariable=self.rotate_var)
-        rotate_entry.pack(fill="x", pady=2)
-        rotate_btn = ttk.Button(left_frame, text="Apply Rotate", command=self.apply_rotate)
-        rotate_btn.pack(fill="x", pady=2)
+        ttk.Entry(left, textvariable=self.rotate_var).pack(fill="x")
+        ttk.Button(left, text="Apply Rotate", command=self.apply_rotate).pack(fill="x", pady=3)
 
-        # Crop
-        ttk.Label(left_frame, text="Crop (L U R D):").pack(anchor="w", pady=(8,0))
-        self.crop_vars = [tk.StringVar(value="0"), tk.StringVar(value="0"), tk.StringVar(value="0"), tk.StringVar(value="0")]
-        crop_frame = ttk.Frame(left_frame)
-        crop_frame.pack(fill="x", pady=2)
-        for v in self.crop_vars:
-            ttk.Entry(crop_frame, textvariable=v, width=6).pack(side="left", padx=2)
-        crop_btn = ttk.Button(left_frame, text="Apply Crop", command=self.apply_crop)
-        crop_btn.pack(fill="x", pady=2)
-
-        ttk.Separator(left_frame, orient="horizontal").pack(fill="x", pady=6)
+        ttk.Separator(left).pack(fill="x", pady=8)
 
         # Filters
-        ttk.Label(left_frame, text="Filters:").pack(anchor="w")
-        filters = [("Blur", "blur"), ("Sharpen", "sharpen"), ("B/W", "bw"), ("Edge", "edge")]
-        for label, mode in filters:
-            ttk.Button(left_frame, text=label, command=lambda m=mode: self.apply_filter(m)).pack(fill="x", pady=2)
+        ttk.Label(left, text="Filters:").pack(anchor="w", pady=2)
+        for name, mode in [("Blur", "blur"), ("Sharpen", "sharpen"),
+                           ("Black/White", "bw"), ("Edge", "edge")]:
+            ttk.Button(left, text=name, command=lambda m=mode: self.apply_filter(m)).pack(fill="x", pady=2)
 
-        ttk.Separator(left_frame, orient="horizontal").pack(fill="x", pady=6)
+        ttk.Separator(left).pack(fill="x", pady=8)
 
-        # Brightness / Contrast
-        ttk.Label(left_frame, text="Brightness / Contrast:").pack(anchor="w")
-        self.brightness_scale = ttk.Scale(left_frame, from_=0.2, to=2.0, value=1.0, orient="horizontal", command=self.on_brightness_change)
+        # Brightness/Contrast
+        ttk.Label(left, text="Brightness / Contrast").pack(anchor="w")
+        self.brightness_scale = ttk.Scale(left, from_=0.2, to=2.0, value=1.0, orient="horizontal")
         self.brightness_scale.pack(fill="x", pady=2)
-        self.contrast_scale = ttk.Scale(left_frame, from_=0.2, to=2.0, value=1.0, orient="horizontal", command=self.on_contrast_change)
+        self.contrast_scale = ttk.Scale(left, from_=0.2, to=2.0, value=1.0, orient="horizontal")
         self.contrast_scale.pack(fill="x", pady=2)
-        apply_bc = ttk.Button(left_frame, text="Apply B/C", command=self.apply_brightness_contrast)
-        apply_bc.pack(fill="x", pady=2)
+        ttk.Button(left, text="Apply B/C", command=self.apply_bc).pack(fill="x", pady=3)
 
-        ttk.Separator(left_frame, orient="horizontal").pack(fill="x", pady=6)
+        ttk.Separator(left).pack(fill="x", pady=8)
 
         # Watermark
-        ttk.Label(left_frame, text="Watermark text:").pack(anchor="w")
-        self.wm_text_var = tk.StringVar()
-        ttk.Entry(left_frame, textvariable=self.wm_text_var).pack(fill="x", pady=2)
-        self.wm_size_var = tk.IntVar(value=24)
-        ttk.Label(left_frame, text="Font size:").pack(anchor="w")
-        ttk.Spinbox(left_frame, from_=8, to=200, textvariable=self.wm_size_var).pack(fill="x", pady=2)
-        ttk.Button(left_frame, text="Apply Watermark", command=self.apply_watermark).pack(fill="x", pady=2)
+        ttk.Label(left, text="Watermark Text:").pack(anchor="w")
+        self.wm_var = tk.StringVar()
+        ttk.Entry(left, textvariable=self.wm_var).pack(fill="x")
+        self.wm_size = tk.IntVar(value=22)
+        ttk.Spinbox(left, from_=8, to=200, textvariable=self.wm_size).pack(fill="x", pady=2)
+        ttk.Button(left, text="Apply Watermark", command=self.apply_watermark).pack(fill="x", pady=3)
 
-        ttk.Separator(left_frame, orient="horizontal").pack(fill="x", pady=6)
+        ttk.Button(left, text="Auto Enhance", command=self.auto_enhance).pack(fill="x", pady=4)
+        ttk.Button(left, text="Histogram Equalize", command=self.hist_equalize).pack(fill="x", pady=4)
 
-        # Misc
-        ttk.Button(left_frame, text="Auto-Enhance (autocontrast+sharp)", command=self.auto_enhance).pack(fill="x", pady=2)
-        ttk.Button(left_frame, text="Histogram Equalize", command=self.hist_equalize).pack(fill="x", pady=2)
+        # Canvas (crop csak egerrel!)
+        right = ttk.Frame(self.root, padding=8)
+        right.pack(side="right", fill="both", expand=True)
 
-        # jobb oldal: kép preview és státusz
-        right_frame = ttk.Frame(self.root, padding=8)
-        right_frame.pack(side="right", fill="both", expand=True)
-
-        # canavas / label a képpel
-        self.canvas = tk.Canvas(right_frame, bg="gray90")
+        self.canvas = tk.Canvas(right, bg="gray90", cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
-        self.canvas_img_id = None
 
-        # státusz alul
-        self.status_var = tk.StringVar(value="No image loaded")
-        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief="sunken", anchor="w")
-        status_bar.pack(side="bottom", fill="x")
+        self.canvas.bind("<Button-1>", self.crop_start)
+        self.canvas.bind("<B1-Motion>", self.crop_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.crop_end)
 
-        # bind dupla katt crop quick demo (később bővíthető)
-        self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.status = tk.StringVar(value="Welcome!")
+        ttk.Label(self.root, textvariable=self.status, relief="sunken").pack(side="bottom", fill="x")
 
-    # ---------- File műveletek ----------
-    def open_image(self):
-        path = filedialog.askopenfilename(title="Open image", filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.bmp;*.tiff;*.webp"), ("All files", "*.*")])
-        if not path:
+    # ---------------- Autoload -------------------
+    def refresh_autoload(self):
+        self.autoload_list.delete(0, tk.END)
+        for f in os.listdir(self.autoload_dir):
+            if f.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp")):
+                self.autoload_list.insert(tk.END, f)
+
+    def autoload_open(self):
+        sel = self.autoload_list.curselection()
+        if not sel:
             return
+        fname = self.autoload_list.get(sel[0])
+        self.load_image(os.path.join(self.autoload_dir, fname))
+
+    # ---------------- File műveletek -------------------
+    def open_image(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.bmp;*.tiff;*.webp")]
+        )
+        if path:
+            self.load_image(path)
+
+    def load_image(self, path):
         img = safe_open_image(path)
         if img is None:
-            messagebox.showerror("Error", "Nem sikerült megnyitni a képet.")
+            messagebox.showerror("Error", "Failed to open image.")
             return
-        self.image_path = path
+
         self.original_image = img.copy()
         self.current_image = img.copy()
-        self.undo_stack = []
-        self._update_preview()
-        self.status_var.set(f"Opened: {os.path.basename(path)} ({img.size[0]}x{img.size[1]})")
+        self.undo_stack.clear()
+        self.update_preview()
+        self.status.set(f"Loaded: {os.path.basename(path)}")
 
     def save_image_as(self):
         if self.current_image is None:
-            messagebox.showinfo("Info", "Nincs kép mentésre.")
             return
-        path = filedialog.asksaveasfilename(defaultextension=".jpg", filetypes=[("JPEG", "*.jpg;*.jpeg"), ("PNG", "*.png"), ("WEBP", "*.webp"), ("TIFF","*.tiff")])
-        if not path:
-            return
-        try:
-            # formátum beállítás a kiterjesztés alapján
-            ext = os.path.splitext(path)[1].lower()
-            fmt = "JPEG"
-            if ext in (".png",):
-                fmt = "PNG"
-            elif ext in (".webp",):
-                fmt = "WEBP"
-            elif ext in (".tif", ".tiff"):
-                fmt = "TIFF"
-            save_kw = {}
-            if fmt == "JPEG":
-                save_kw["quality"] = 95
-            self.current_image.save(path, fmt, **save_kw)
-            self.status_var.set(f"Saved: {path}")
-            messagebox.showinfo("Saved", f"Kép elmentve: {path}")
-        except Exception as e:
-            messagebox.showerror("Save error", str(e))
+        path = filedialog.asksaveasfilename(defaultextension=".jpg")
+        if path:
+            self.current_image.save(path)
+            messagebox.showinfo("Saved", f"Saved: {path}")
 
-    # ---------- Undo / Reset ----------
-    def push_undo(self):
+    def quick_save(self):
+        """Új funkció: gyors mentés a kesz_kepek mappába"""
         if self.current_image is None:
             return
-        # limitáljuk a stack méretet
-        try:
+
+        files = [f for f in os.listdir(self.export_dir) if f.lower().endswith(".jpg")]
+        idx = len(files)
+        fname = f"export_{idx:03d}.jpg"
+        path = os.path.join(self.export_dir, fname)
+
+        self.current_image.save(path, quality=95)
+        self.status.set(f"Quick Saved → {fname}")
+
+    # ---------------- Undo/Reset -------------------
+    def push_undo(self):
+        if self.current_image:
             self.undo_stack.append(self.current_image.copy())
             if len(self.undo_stack) > self.max_undo:
                 self.undo_stack.pop(0)
-        except Exception:
-            pass
 
     def undo(self):
         if not self.undo_stack:
-            messagebox.showinfo("Undo", "Nincs több visszavonható művelet.")
+            messagebox.showinfo("Undo", "Nothing to undo.")
             return
         self.current_image = self.undo_stack.pop()
-        self._update_preview()
-        self.status_var.set("Undo")
+        self.update_preview()
 
     def reset_image(self):
-        if self.original_image is None:
-            return
-        self.push_undo()
-        self.current_image = self.original_image.copy()
-        self._update_preview()
-        self.status_var.set("Reset to original")
+        if self.original_image:
+            self.push_undo()
+            self.current_image = self.original_image.copy()
+            self.update_preview()
 
-    # ---------- Alap műveletek ----------
+    # ---------------- Műveletek -------------------
     def apply_resize(self):
-        if self.current_image is None:
-            return
-        s = self.resize_var.get().strip()
-        if not s:
-            messagebox.showinfo("Info", "Adj meg egy szélességet (px).")
+        if not self.current_image:
             return
         try:
-            w = int(s)
+            w = int(self.resize_var.get())
             if w <= 0:
                 raise ValueError()
-        except Exception:
-            messagebox.showerror("Hiba", "Helytelen szélesség.")
+        except:
+            messagebox.showerror("Error", "Invalid width.")
             return
+
         self.push_undo()
         w0, h0 = self.current_image.size
-        ratio = w / float(w0)
-        h = max(1, int(h0 * ratio))
+        h = int(h0 * w / w0)
         self.current_image = self.current_image.resize((w, h), Image.Resampling.LANCZOS)
-        self._update_preview()
-        self.status_var.set(f"Resized to {w}x{h}")
+        self.update_preview()
 
     def apply_rotate(self):
-        if self.current_image is None:
+        if not self.current_image:
             return
-        s = self.rotate_var.get().strip()
         try:
-            angle = float(s)
-        except Exception:
-            messagebox.showerror("Hiba", "Helytelen szög.")
+            angle = float(self.rotate_var.get())
+        except:
+            messagebox.showerror("Error", "Invalid angle.")
             return
+
         self.push_undo()
         self.current_image = self.current_image.rotate(-angle, expand=True)
-        self._update_preview()
-        self.status_var.set(f"Rotated {angle}°")
-
-    def apply_crop(self):
-        if self.current_image is None:
-            return
-        try:
-            vals = [int(v.get()) for v in self.crop_vars]
-        except Exception:
-            messagebox.showerror("Hiba", "Helytelen crop érték.")
-            return
-        box = clamp_box(tuple(vals), self.current_image.size)
-        self.push_undo()
-        self.current_image = self.current_image.crop(box)
-        self._update_preview()
-        self.status_var.set(f"Cropped to box {box}")
+        self.update_preview()
 
     def apply_filter(self, mode):
-        if self.current_image is None:
+        if not self.current_image:
             return
+
         self.push_undo()
-        mode = mode.lower()
         if mode == "blur":
             img = self.current_image.filter(ImageFilter.BLUR)
         elif mode == "sharpen":
             img = self.current_image.filter(ImageFilter.SHARPEN)
-        elif mode in ("bw", "grayscale", "gray"):
+        elif mode == "bw":
             img = self.current_image.convert("L").convert("RGB")
         elif mode == "edge":
             img = self.current_image.filter(ImageFilter.FIND_EDGES)
         else:
             return
+
         self.current_image = img
-        self._update_preview()
-        self.status_var.set(f"Applied filter: {mode}")
+        self.update_preview()
 
-    def on_brightness_change(self, _=None):
-        # valós időben ne alkalmazzunk, csak tároljuk
-        val = self.brightness_scale.get()
-        self.status_var.set(f"Brightness preview: {val:.2f}")
-
-    def on_contrast_change(self, _=None):
-        val = self.contrast_scale.get()
-        self.status_var.set(f"Contrast preview: {val:.2f}")
-
-    def apply_brightness_contrast(self):
-        if self.current_image is None:
+    def apply_bc(self):
+        if not self.current_image:
             return
+
+        b = self.brightness_scale.get()
+        c = self.contrast_scale.get()
+
         self.push_undo()
-        b = float(self.brightness_scale.get())
-        c = float(self.contrast_scale.get())
         img = ImageEnhance.Brightness(self.current_image).enhance(b)
         img = ImageEnhance.Contrast(img).enhance(c)
         self.current_image = img
-        self._update_preview()
-        self.status_var.set(f"Applied B/C: {b:.2f}/{c:.2f}")
+        self.update_preview()
 
     def apply_watermark(self):
-        if self.current_image is None:
+        if not self.current_image:
             return
-        text = self.wm_text_var.get().strip()
+
+        text = self.wm_var.get().strip()
         if not text:
-            messagebox.showinfo("Watermark", "Adj meg vízjelszöveget.")
+            messagebox.showinfo("Watermark", "Enter text.")
             return
+
         self.push_undo()
+
         img = self.current_image.convert("RGBA")
-        txt_layer = Image.new("RGBA", img.size, (255,255,255,0))
-        draw = ImageDraw.Draw(txt_layer)
-        # próbálunk betűtípust betölteni, ha van
-        font = None
+        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+
         try:
-            font = ImageFont.truetype("arial.ttf", self.wm_size_var.get())
-        except Exception:
-            try:
-                font = ImageFont.load_default()
-            except Exception:
-                font = None
+            font = ImageFont.truetype("arial.ttf", self.wm_size.get())
+        except:
+            font = ImageFont.load_default()
+
         W, H = img.size
         bbox = draw.textbbox((0, 0), text, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        # jobb alsó sarok
-        margin = 10
-        x = W - text_w - margin
-        y = H - text_h - margin
-        # árnyék és fehér text
-        draw.text((x+1, y+1), text, font=font, fill=(0,0,0,140))
-        draw.text((x, y), text, font=font, fill=(255,255,255,200))
-        out = Image.alpha_composite(img, txt_layer).convert("RGB")
-        self.current_image = out
-        self._update_preview()
-        self.status_var.set("Watermark applied")
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = W - w - 10
+        y = H - h - 10
+
+        draw.text((x + 1, y + 1), text, font=font, fill=(0, 0, 0, 180))
+        draw.text((x, y), text, font=font, fill=(255, 255, 255, 220))
+
+        self.current_image = Image.alpha_composite(img, layer).convert("RGB")
+        self.update_preview()
 
     def auto_enhance(self):
-        if self.current_image is None:
+        if not self.current_image:
             return
         self.push_undo()
         img = ImageOps.autocontrast(self.current_image)
-        img = ImageEnhance.Sharpness(img).enhance(1.2)
+        img = ImageEnhance.Sharpness(img).enhance(1.3)
         self.current_image = img
-        self._update_preview()
-        self.status_var.set("Auto-enhance applied")
+        self.update_preview()
 
     def hist_equalize(self):
-        if self.current_image is None:
-            return
-        if self.current_image.mode != "RGB":
-            img = self.current_image.convert("RGB")
-        else:
-            img = self.current_image
-        self.push_undo()
-        try:
-            ycbcr = img.convert("YCbCr")
-            y, cb, cr = ycbcr.split()
-            y_eq = ImageOps.equalize(y)
-            merged = Image.merge("YCbCr", (y_eq, cb, cr)).convert("RGB")
-            self.current_image = merged
-            self._update_preview()
-            self.status_var.set("Histogram equalize applied")
-        except Exception as e:
-            messagebox.showerror("Error", f"Hist equalize error: {e}")
-
-    # ---------- Canvas click (egyszerű demó) ----------
-    def on_canvas_click(self, event):
-        # egyszerű információs demo: megmutatja a pozíciót és képpont színét
         if not self.current_image:
             return
-        # átszámoljuk a canvas pozíciót a teljes kép pozíciójára a preview_ratio segítségével
-        x = int(event.x / self.preview_ratio)
-        y = int(event.y / self.preview_ratio)
-        x = max(0, min(x, self.current_image.size[0]-1))
-        y = max(0, min(y, self.current_image.size[1]-1))
-        pix = self.current_image.getpixel((x,y))
-        self.status_var.set(f"Pos: ({x},{y}) Color: {pix}")
+        self.push_undo()
+        ycbcr = self.current_image.convert("YCbCr")
+        y, cb, cr = ycbcr.split()
+        y2 = ImageOps.equalize(y)
+        out = Image.merge("YCbCr", (y2, cb, cr)).convert("RGB")
+        self.current_image = out
+        self.update_preview()
 
-    # ---------- Preview frissítés ----------
-    def _update_preview(self):
-        if self.current_image is None:
-            self.canvas.delete("all")
-            self.canvas_img_id = None
+    # ---------------- Crop egérrel -------------------
+    def canvas_to_img(self, cx, cy):
+        ox, oy = self.preview_offset
+        r = self.preview_ratio
+        ix = int((cx - ox) / r)
+        iy = int((cy - oy) / r)
+        return ix, iy
+
+    def crop_start(self, event):
+        if not self.current_image:
             return
-        try:
-            # méretezés a canvas méretéhez (nem a root ablakhoz)
-            canvas_w = max(200, self.canvas.winfo_width())
-            canvas_h = max(200, self.canvas.winfo_height())
-            tkimg, ratio = pil_to_tk(self.current_image, maxsize=(canvas_w, canvas_h))
-            self.preview_ratio = ratio
-            self.canvas.delete("all")
-            self.canvas_img = tkimg  # referenciát meg kell tartani
-            self.canvas_img_id = self.canvas.create_image(canvas_w//2, canvas_h//2, image=tkimg, anchor="center")
-        except Exception as e:
-            print("Preview error:", e)
-            traceback.print_exc()
+        self.select_start = (event.x, event.y)
+        if self.select_rect:
+            self.canvas.delete(self.select_rect)
+            self.select_rect = None
 
-# ---------- Futás ----------
+    def crop_drag(self, event):
+        if not self.current_image or not self.select_start:
+            return
+
+        x0, y0 = self.select_start
+        x1, y1 = event.x, event.y
+
+        if self.select_rect:
+            self.canvas.delete(self.select_rect)
+
+        self.select_rect = self.canvas.create_rectangle(
+            x0, y0, x1, y1, outline="red", dash=(3, 3), width=2
+        )
+
+    def crop_end(self, event):
+        if not self.current_image or not self.select_start:
+            return
+
+        x0, y0 = self.select_start
+        x1, y1 = event.x, event.y
+
+        if self.select_rect:
+            self.canvas.delete(self.select_rect)
+            self.select_rect = None
+
+        if abs(x1 - x0) < 5 or abs(y1 - y0) < 5:
+            self.status.set("Crop cancelled (area too small)")
+            return
+
+        ix0, iy0 = self.canvas_to_img(x0, y0)
+        ix1, iy1 = self.canvas_to_img(x1, y1)
+
+        L, R = sorted((ix0, ix1))
+        U, D = sorted((iy0, iy1))
+
+        box = clamp_box((L, U, R, D), self.current_image.size)
+        w = box[2] - box[0]
+        h = box[3] - box[1]
+
+        if w < 5 or h < 5:
+            self.status.set("Crop cancelled (after mapping)")
+            return
+
+        self.push_undo()
+        self.current_image = self.current_image.crop(box)
+        self.update_preview()
+        self.status.set("Crop done")
+
+        self.select_start = None
+
+    # ---------------- Preview -------------------
+    def update_preview(self):
+        if not self.current_image:
+            return
+
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+
+        if cw < 50 or ch < 50:
+            cw, ch = 800, 600
+
+        tkimg, r, (dw, dh) = pil_to_tk(self.current_image, (cw, ch))
+        self.preview_ratio = r
+
+        ox = (cw - dw) // 2
+        oy = (ch - dh) // 2
+        self.preview_offset = (ox, oy)
+
+        self.canvas.delete("all")
+        self.canvas_img = tkimg
+        self.canvas.create_image(ox, oy, image=tkimg, anchor="nw")
+
+
+# -------------------- MAIN --------------------
 def main():
     root = tk.Tk()
     app = ImageEditorApp(root)
     root.mainloop()
+
 
 if __name__ == "__main__":
     main()
