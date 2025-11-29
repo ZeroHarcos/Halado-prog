@@ -12,6 +12,7 @@ Képszerkesztő (javított, tisztított verzió)
 import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from turtle import right
 from PIL import Image, ImageFilter, ImageEnhance, ImageTk, ImageOps, ImageDraw, ImageFont
 
 
@@ -51,6 +52,41 @@ class ImageEditorApp:
         self.root = root
         self.root.title("Képszerkesztő – Final Version")
         self.root.geometry("1250x800")
+
+             # ----- DARK GREEN UI THEME -----
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        # Globális háttér fekete
+        self.root.configure(bg="#000000")
+        style.configure(".", background="#000000", foreground="#00ff66")
+
+        # Frame-ek & Label-ek
+        style.configure("TFrame", background="#000000")
+        style.configure("TLabel", background="#000000", foreground="#00ff66")
+
+        # Zöld gombok
+        style.configure(
+            "TButton",
+            background="#00cc44",
+            foreground="black",
+            padding=6,
+            font=("Segoe UI", 10, "bold")
+        )
+        style.map("TButton", background=[("active", "#00ff66")])
+
+        # Input mezők (Entry, Spinbox)
+        style.configure(
+            "TEntry",
+            fieldbackground="#ffffff",
+            foreground="black"
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground="#ffffff",
+            foreground="black"
+        )
+
 
         # Autosave mappa
         self.autosave_dir = "szerkesztett_kepek"
@@ -149,8 +185,7 @@ class ImageEditorApp:
         # Canvas (crop csak egerrel!)
         right = ttk.Frame(self.root, padding=8)
         right.pack(side="right", fill="both", expand=True)
-
-        self.canvas = tk.Canvas(right, bg="gray90", cursor="crosshair")
+        self.canvas = tk.Canvas(right, bg="#000000", cursor="crosshair", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
 
         self.canvas.bind("<Button-1>", self.crop_start)
@@ -158,7 +193,16 @@ class ImageEditorApp:
         self.canvas.bind("<ButtonRelease-1>", self.crop_end)
 
         self.status = tk.StringVar(value="Welcome!")
-        ttk.Label(self.root, textvariable=self.status, relief="sunken").pack(side="bottom", fill="x")
+        statusbar = tk.Label(
+        self.root,
+        textvariable=self.status,
+        bg="#000000",
+        fg="#00ff66",
+        pady=4
+        )
+        statusbar.pack(side="bottom", fill="x")
+
+
 
     # ---------------- Autoload -------------------
     def refresh_autoload(self):
