@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Képszerkesztő (javított, tisztított verzió)
-- Írós crop eltávolítva
-- Egérrel húzható crop (fixálva)
-- Autosave szerkesztett_kepek mappába
-- Autoload kepek mappából
-- Új: Quick Save → kesz_kepek mappába
-"""
-
 import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -16,7 +5,6 @@ from turtle import right
 from PIL import Image, ImageFilter, ImageEnhance, ImageTk, ImageOps, ImageDraw, ImageFont
 
 
-# ------------------- Segédfüggvények -------------------
 def safe_open_image(path):
     try:
         return Image.open(path).convert("RGB")
@@ -46,26 +34,25 @@ def clamp_box(box, img_size):
     return (L, U, R, D)
 
 
-# ---------------------- APP CLASS -----------------------
+
 class ImageEditorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Képszerkesztő – Final Version")
         self.root.geometry("1250x800")
 
-             # ----- DARK GREEN UI THEME -----
+        
         style = ttk.Style()
         style.theme_use("clam")
 
-        # Globális háttér fekete
         self.root.configure(bg="#000000")
         style.configure(".", background="#000000", foreground="#00ff66")
 
-        # Frame-ek & Label-ek
+   
         style.configure("TFrame", background="#000000")
         style.configure("TLabel", background="#000000", foreground="#00ff66")
 
-        # Zöld gombok
+   
         style.configure(
             "TButton",
             background="#00cc44",
@@ -75,7 +62,7 @@ class ImageEditorApp:
         )
         style.map("TButton", background=[("active", "#00ff66")])
 
-        # Input mezők (Entry, Spinbox)
+     
         style.configure(
             "TEntry",
             fieldbackground="#ffffff",
@@ -88,36 +75,36 @@ class ImageEditorApp:
         )
 
 
-        # Autosave mappa
+
         self.autosave_dir = "szerkesztett_kepek"
         os.makedirs(self.autosave_dir, exist_ok=True)
 
-        # Quick save mappa
+
         self.export_dir = "kesz_kepek"
         os.makedirs(self.export_dir, exist_ok=True)
 
-        # Autoload könyvtár
+
         self.autoload_dir = "kepek"
         os.makedirs(self.autoload_dir, exist_ok=True)
 
-        # Állapotok
+
         self.original_image = None
         self.current_image = None
         self.undo_stack = []
         self.max_undo = 10
 
-        # Crop state
+ 
         self.select_start = None
         self.select_rect = None
 
-        # Preview adatok
+  
         self.preview_ratio = 1.0
         self.preview_offset = (0, 0)
         self.display_size = (0, 0)
 
         self._build_ui()
 
-    # ------------------- UI ----------------------
+    
     def _build_ui(self):
         left = ttk.Frame(self.root, padding=8)
         left.pack(side="left", fill="y")
@@ -130,7 +117,6 @@ class ImageEditorApp:
 
         ttk.Separator(left).pack(fill="x", pady=6)
 
-        # Autoload list
         ttk.Label(left, text="Load from /kepek:").pack(anchor="w")
         self.autoload_list = tk.Listbox(left, height=6)
         self.autoload_list.pack(fill="x", pady=4)
@@ -139,13 +125,12 @@ class ImageEditorApp:
 
         ttk.Separator(left).pack(fill="x", pady=8)
 
-        # Resize
+  
         ttk.Label(left, text="Resize (width px):").pack(anchor="w")
         self.resize_var = tk.StringVar()
         ttk.Entry(left, textvariable=self.resize_var).pack(fill="x")
         ttk.Button(left, text="Apply Resize", command=self.apply_resize).pack(fill="x", pady=3)
 
-        # Rotate
         ttk.Label(left, text="Rotate (degrees):").pack(anchor="w", pady=4)
         self.rotate_var = tk.StringVar(value="0")
         ttk.Entry(left, textvariable=self.rotate_var).pack(fill="x")
@@ -153,7 +138,6 @@ class ImageEditorApp:
 
         ttk.Separator(left).pack(fill="x", pady=8)
 
-        # Filters
         ttk.Label(left, text="Filters:").pack(anchor="w", pady=2)
         for name, mode in [("Blur", "blur"), ("Sharpen", "sharpen"),
                            ("Black/White", "bw"), ("Edge", "edge")]:
@@ -161,7 +145,7 @@ class ImageEditorApp:
 
         ttk.Separator(left).pack(fill="x", pady=8)
 
-        # Brightness/Contrast
+      
         ttk.Label(left, text="Brightness / Contrast").pack(anchor="w")
         self.brightness_scale = ttk.Scale(left, from_=0.2, to=2.0, value=1.0, orient="horizontal")
         self.brightness_scale.pack(fill="x", pady=2)
@@ -171,7 +155,7 @@ class ImageEditorApp:
 
         ttk.Separator(left).pack(fill="x", pady=8)
 
-        # Watermark
+     
         ttk.Label(left, text="Watermark Text:").pack(anchor="w")
         self.wm_var = tk.StringVar()
         ttk.Entry(left, textvariable=self.wm_var).pack(fill="x")
@@ -182,7 +166,7 @@ class ImageEditorApp:
         ttk.Button(left, text="Auto Enhance", command=self.auto_enhance).pack(fill="x", pady=4)
         ttk.Button(left, text="Histogram Equalize", command=self.hist_equalize).pack(fill="x", pady=4)
 
-        # Canvas (crop csak egerrel!)
+     
         right = ttk.Frame(self.root, padding=8)
         right.pack(side="right", fill="both", expand=True)
         self.canvas = tk.Canvas(right, bg="#000000", cursor="crosshair", highlightthickness=0)
@@ -204,7 +188,7 @@ class ImageEditorApp:
 
 
 
-    # ---------------- Autoload -------------------
+    
     def refresh_autoload(self):
         self.autoload_list.delete(0, tk.END)
         for f in os.listdir(self.autoload_dir):
@@ -218,7 +202,6 @@ class ImageEditorApp:
         fname = self.autoload_list.get(sel[0])
         self.load_image(os.path.join(self.autoload_dir, fname))
 
-    # ---------------- File műveletek -------------------
     def open_image(self):
         path = filedialog.askopenfilename(
             filetypes=[("Images", "*.png;*.jpg;*.jpeg;*.bmp;*.tiff;*.webp")]
@@ -259,7 +242,7 @@ class ImageEditorApp:
         self.current_image.save(path, quality=95)
         self.status.set(f"Quick Saved → {fname}")
 
-    # ---------------- Undo/Reset -------------------
+ 
     def push_undo(self):
         if self.current_image:
             self.undo_stack.append(self.current_image.copy())
@@ -279,7 +262,7 @@ class ImageEditorApp:
             self.current_image = self.original_image.copy()
             self.update_preview()
 
-    # ---------------- Műveletek -------------------
+   
     def apply_resize(self):
         if not self.current_image:
             return
@@ -394,7 +377,7 @@ class ImageEditorApp:
         self.current_image = out
         self.update_preview()
 
-    # ---------------- Crop egérrel -------------------
+   
     def canvas_to_img(self, cx, cy):
         ox, oy = self.preview_offset
         r = self.preview_ratio
@@ -460,7 +443,7 @@ class ImageEditorApp:
 
         self.select_start = None
 
-    # ---------------- Preview -------------------
+
     def update_preview(self):
         if not self.current_image:
             return
@@ -483,7 +466,7 @@ class ImageEditorApp:
         self.canvas.create_image(ox, oy, image=tkimg, anchor="nw")
 
 
-# -------------------- MAIN --------------------
+
 def main():
     root = tk.Tk()
     app = ImageEditorApp(root)
